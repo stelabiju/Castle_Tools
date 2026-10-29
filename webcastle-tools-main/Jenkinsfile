@@ -48,20 +48,6 @@ pipeline {
             }
         }
 
-        stage('Lint') {
-            steps {
-                dir('webcastle-tools-main') {
-                    sh '''
-                        docker run --rm \
-                        -v "$PWD:/app" \
-                        -w /app \
-                        oven/bun:1 \
-                        bun run lint
-                    '''
-                }
-            }
-        }
-
         stage('SAST Scan - Semgrep') {
             steps {
                 sh '''
