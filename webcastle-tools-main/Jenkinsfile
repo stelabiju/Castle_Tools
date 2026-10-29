@@ -1,0 +1,214 @@
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        // AWS ECR Configuration
+        AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '457660516559'
+        ECR_REPOSITORY = 'credvault'
+
+        // GitHub Credentials
+        GITHUB_CREDENTIALS_ID = 'github-pat'
+
+        // Docker Image
+        IMAGE_NAME = 'credvault'
+        IMAGE_TAG = "${BUILD_NUMBER}"
+        LOCAL_IMAGE = "credvault:${BUILD_NUMBER}"
+
+        // Kubernetes Manifest
+        K8S_MANIFEST = 'k8s/deployment.yaml'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                checkout scm
+                echo 'CredVault source code checked out successfully.'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                dir('webcastle-tools-main') {
+                    sh '''
+                        docker run --rm \
+                        -v "$PWD:/app" \
+                        -w /app \
+                        oven/bun:1 \
+                        bun install --frozen-lockfile
+                    '''
+                }
+            }
+        }
+
+        stage('Lint') {
+            steps {
+                dir('webcastle-tools-main') {
+                    sh '''
+                        docker run --rm \
+                        -v "$PWD:/app" \
+                        -w /app \
+                        oven/bun:1 \
+                        bun run lint
+                    '''
+                }
+            }
+        }
+
+        stage('SAST Scan - Semgrep') {
+            steps {
+                sh '''
+                    mkdir -p "$WORKSPACE/reports"
+
+                    docker run --rm \
+                    -v "$WORKSPACE/webcastle-tools-main:/src" \
+                    -v "$WORKSPACE/reports:/reports" \
+                    semgrep/semgrep \
+                    semgrep scan \
+                    --config auto \
+                    --json \
+                    --output /reports/semgrep.json \
+                    /src
+                '''
+            }
+        }
+
+        stage('Trivy Filesystem Scan') {
+            steps {
+                sh '''
+                    docker run --rm \
+                    -v "$WORKSPACE/webcastle-tools-main:/src" \
+                    -v "$WORKSPACE/reports:/reports" \
+                    aquasec/trivy:latest \
+                    fs \
+                    --scanners vuln,misconfig,secret \
+                    --format json \
+                    --output /reports/trivy-fs.json \
+                    --exit-code 0 \
+                    /src
+                '''
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                dir('webcastle-tools-main') {
+                    sh '''
+                        docker build \
+                        -t "$LOCAL_IMAGE" .
+                    '''
+                }
+            }
+        }
+
+        stage('Trivy Image Scan') {
+            steps {
+                sh '''
+                    docker run --rm \
+                    -v /var/run/docker.sock:/var/run/docker.sock \
+                    -v "$WORKSPACE/reports:/reports" \
+                    aquasec/trivy:latest \
+                    image \
+                    --format json \
+                    --output /reports/trivy-image.json \
+                    --exit-code 0 \
+                    "$LOCAL_IMAGE"
+                '''
+            }
+        }
+
+        stage('Push to AWS ECR') {
+            steps {
+                script {
+                    env.ECR_REGISTRY =
+                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+
+                    env.ECR_IMAGE =
+                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                }
+
+                sh '''
+                    aws ecr get-login-password \
+                    --region "$AWS_REGION" | \
+                    docker login \
+                    --username AWS \
+                    --password-stdin "$ECR_REGISTRY"
+
+                    docker tag "$LOCAL_IMAGE" "$ECR_IMAGE"
+
+                    docker push "$ECR_IMAGE"
+
+                    echo "$ECR_IMAGE" > "$WORKSPACE/reports/image-uri.txt"
+                '''
+            }
+        }
+
+        stage('Update Kubernetes Manifest') {
+            steps {
+                sh '''
+                    if [ ! -f "$K8S_MANIFEST" ]; then
+                        echo "Kubernetes manifest not found!"
+                        exit 1
+                    fi
+
+                    sed -i -E \
+                    "s#(^[[:space:]]*image:[[:space:]]*).*#\\\\1${ECR_IMAGE}#" \
+                    "$K8S_MANIFEST"
+
+                    echo "Updated Kubernetes image:"
+                    grep "image:" "$K8S_MANIFEST"
+                '''
+            }
+        }
+
+        stage('Push Manifest to GitHub') {
+            steps {
+                withCredentials([
+                    gitUsernamePassword(
+                        credentialsId: "${GITHUB_CREDENTIALS_ID}",
+                        gitToolName: 'Default'
+                    )
+                ]) {
+                    sh '''
+                        git config user.name "Jenkins"
+                        git config user.email "jenkins@example.com"
+
+                        git add k8s/deployment.yaml
+
+                        if ! git diff --cached --quiet; then
+                            git commit -m "Update CredVault image to ${IMAGE_TAG} [skip ci]"
+                            git push origin HEAD:main
+                        else
+                            echo "No manifest changes to push."
+                        fi
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            archiveArtifacts(
+                artifacts: 'reports/**/*, k8s/deployment.yaml',
+                allowEmptyArchive: true,
+                fingerprint: true
+            )
+        }
+
+        success {
+            echo 'CredVault CI/CD pipeline completed successfully!'
+        }
+
+        failure {
+            echo 'CredVault pipeline failed. Check Jenkins console output.'
+        }
+    }
+}
