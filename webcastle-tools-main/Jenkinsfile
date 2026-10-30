@@ -14,7 +14,7 @@ pipeline {
         ECR_REPOSITORY = 'credvault'
 
         // GitHub Credentials
-        GITHUB_CREDENTIALS_ID = 'github-pat'
+        GITHUB_CREDENTIALS_ID = 'git-pat'
 
         // Docker Image
         IMAGE_NAME = 'credvault'
