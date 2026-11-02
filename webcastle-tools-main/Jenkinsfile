@@ -23,6 +23,7 @@ pipeline {
 
     stages {
 
+        // Stage 1: Checkout Source Code
         stage('Checkout') {
             steps {
                 checkout scm
@@ -30,6 +31,7 @@ pipeline {
             }
         }
 
+        // Stage 2: Install Dependencies
         stage('Install Dependencies') {
             steps {
                 dir('webcastle-tools-main') {
@@ -44,6 +46,7 @@ pipeline {
             }
         }
 
+        // Stage 3: SAST Scan using Semgrep
         stage('SAST Scan - Semgrep') {
             steps {
                 sh '''
@@ -62,6 +65,7 @@ pipeline {
             }
         }
 
+        // Stage 4: Trivy Filesystem Scan
         stage('Trivy Filesystem Scan') {
             steps {
                 sh '''
@@ -79,6 +83,7 @@ pipeline {
             }
         }
 
+        // Stage 5: Docker Image Build
         stage('Docker Build') {
             steps {
                 dir('webcastle-tools-main') {
@@ -90,6 +95,7 @@ pipeline {
             }
         }
 
+        // Stage 6: Trivy Docker Image Scan
         stage('Trivy Image Scan') {
             steps {
                 sh '''
@@ -106,6 +112,7 @@ pipeline {
             }
         }
 
+        // Stage 7: Push Docker Image to Docker Hub
         stage('Push to Docker Hub') {
             steps {
                 withCredentials([
@@ -132,6 +139,7 @@ pipeline {
             }
         }
 
+        // Stage 8: Update Kubernetes Manifest
         stage('Update Kubernetes Manifest') {
             steps {
                 sh '''
@@ -150,6 +158,7 @@ pipeline {
             }
         }
 
+        // Stage 9: Push Updated Manifest to GitHub
         stage('Push Manifest to GitHub') {
             steps {
                 withCredentials([
@@ -164,23 +173,43 @@ pipeline {
 
                         git remote set-url origin https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/sumith-k-sam/Castle_Tools.git
 
+                        echo "Fetching latest GitHub changes..."
+
+                        git fetch origin main
+
+                        echo "Synchronizing workspace with GitHub..."
+
+                        git reset --hard origin/main
+
+                        if [ ! -f "$K8S_MANIFEST" ]; then
+                            echo "Kubernetes manifest not found!"
+                            exit 1
+                        fi
+
+                        echo "Updating Docker image in latest manifest..."
+
+                        sed -i -E \
+                        "s#(^[[:space:]]*image:[[:space:]]*).*#\\\\1${DOCKERHUB_IMAGE}#" \
+                        "$K8S_MANIFEST"
+
                         git add k8s/deployment.yaml
 
                         if ! git diff --cached --quiet; then
                             git commit -m "Update CredVault image to ${IMAGE_TAG} [skip ci]"
+
+                            git push origin HEAD:main
                         else
-                            echo "No manifest changes to commit."
+                            echo "Manifest already contains the latest image."
                         fi
 
-                        git pull --rebase origin main
-
-                        git push origin HEAD:main
+                        echo "GitHub manifest update completed."
                     '''
                 }
             }
         }
     }
 
+    // Post Build Actions
     post {
         always {
             archiveArtifacts(
