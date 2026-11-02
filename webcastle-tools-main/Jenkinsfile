@@ -168,10 +168,13 @@ pipeline {
 
                         if ! git diff --cached --quiet; then
                             git commit -m "Update CredVault image to ${IMAGE_TAG} [skip ci]"
-                            git push origin HEAD:main
                         else
-                            echo "No manifest changes to push."
+                            echo "No manifest changes to commit."
                         fi
+
+                        git pull --rebase origin main
+
+                        git push origin HEAD:main
                     '''
                 }
             }
