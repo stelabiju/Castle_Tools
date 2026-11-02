@@ -1,4 +1,3 @@
-
 pipeline {
     agent any
 
@@ -8,18 +7,15 @@ pipeline {
     }
 
     environment {
-        // AWS ECR Configuration
-        AWS_REGION = 'us-east-1'
-        AWS_ACCOUNT_ID = '457660516559'
-        ECR_REPOSITORY = 'credvault'
-
-        // GitHub Credentials
-        GITHUB_CREDENTIALS_ID = 'github-pat'
+        // Docker Hub Configuration
+        DOCKERHUB_USERNAME = 'sumithksam'
+        DOCKERHUB_CREDENTIALS_ID = 'docker-pat'
 
         // Docker Image
         IMAGE_NAME = 'credvault'
         IMAGE_TAG = "${BUILD_NUMBER}"
         LOCAL_IMAGE = "credvault:${BUILD_NUMBER}"
+        DOCKERHUB_IMAGE = "sumithksam/credvault:${BUILD_NUMBER}"
 
         // Kubernetes Manifest
         K8S_MANIFEST = 'k8s/deployment.yaml'
@@ -110,29 +106,29 @@ pipeline {
             }
         }
 
-        stage('Push to AWS ECR') {
+        stage('Push to Docker Hub') {
             steps {
-                script {
-                    env.ECR_REGISTRY =
-                        "${env.AWS_ACCOUNT_ID}.dkr.ecr.${env.AWS_REGION}.amazonaws.com"
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: "${DOCKERHUB_CREDENTIALS_ID}",
+                        usernameVariable: 'DOCKERHUB_USER',
+                        passwordVariable: 'DOCKERHUB_PASSWORD'
+                    )
+                ]) {
+                    sh '''
+                        echo "$DOCKERHUB_PASSWORD" | docker login \
+                        --username "$DOCKERHUB_USER" \
+                        --password-stdin
 
-                    env.ECR_IMAGE =
-                        "${env.ECR_REGISTRY}/${env.ECR_REPOSITORY}:${env.IMAGE_TAG}"
+                        docker tag "$LOCAL_IMAGE" "$DOCKERHUB_IMAGE"
+
+                        docker push "$DOCKERHUB_IMAGE"
+
+                        echo "$DOCKERHUB_IMAGE" > "$WORKSPACE/reports/image-uri.txt"
+
+                        docker logout
+                    '''
                 }
-
-                sh '''
-                    aws ecr get-login-password \
-                    --region "$AWS_REGION" | \
-                    docker login \
-                    --username AWS \
-                    --password-stdin "$ECR_REGISTRY"
-
-                    docker tag "$LOCAL_IMAGE" "$ECR_IMAGE"
-
-                    docker push "$ECR_IMAGE"
-
-                    echo "$ECR_IMAGE" > "$WORKSPACE/reports/image-uri.txt"
-                '''
             }
         }
 
@@ -145,7 +141,7 @@ pipeline {
                     fi
 
                     sed -i -E \
-                    "s#(^[[:space:]]*image:[[:space:]]*).*#\\\\1${ECR_IMAGE}#" \
+                    "s#(^[[:space:]]*image:[[:space:]]*).*#\\\\1${DOCKERHUB_IMAGE}#" \
                     "$K8S_MANIFEST"
 
                     echo "Updated Kubernetes image:"
@@ -158,7 +154,7 @@ pipeline {
             steps {
                 withCredentials([
                     gitUsernamePassword(
-                        credentialsId: "${GITHUB_CREDENTIALS_ID}",
+                        credentialsId: 'github-pat',
                         gitToolName: 'Default'
                     )
                 ]) {
@@ -166,7 +162,6 @@ pipeline {
                         git config user.name "Sumith K Sam"
                         git config user.email "sumith@zoople.in"
 
-                        # Point remote URL to your main repository using injected token credentials
                         git remote set-url origin https://${GIT_USERNAME}:${GIT_PASSWORD}@github.com/sumith-k-sam/Castle_Tools.git
 
                         git add k8s/deployment.yaml
